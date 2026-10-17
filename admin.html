@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="ta">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#e4572e">
+<title>Spicey Corner Admin</title>
+<script src="https://cdn.jsdelivr.net/npm/firebase@10.12.2/firebase-app-compat.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/firebase@10.12.2/firebase-firestore-compat.js"></script>
+<style>
+:root{--bg:#fff7f0;--card:#ffffff;--ink:#2a1a12;--accent:#e4572e;--muted:#8a7468;--wa:#25D366}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--bg:#1b1410;--card:#2a201b;--ink:#f5ebe4;--accent:#ff7a4d;--muted:#b09d92;--wa:#25D366}}
+:root[data-theme="dark"]{--bg:#1b1410;--card:#2a201b;--ink:#f5ebe4;--accent:#ff7a4d;--muted:#b09d92;--wa:#25D366}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:system-ui,-apple-system,sans-serif}
+.wrap{max-width:520px;margin:0 auto;padding:16px}
+h1{font-size:22px;margin:8px 0}
+h3{font-size:16px;margin:0 0 8px}
+.card{background:var(--card);border-radius:14px;padding:14px;margin:12px 0;box-shadow:0 2px 8px rgba(0,0,0,.08)}
+input{width:100%;box-sizing:border-box;padding:12px;border-radius:10px;border:1px solid #ccc;font-size:16px;margin:6px 0;background:var(--card);color:var(--ink)}
+button{width:100%;padding:12px;border:0;border-radius:10px;background:var(--accent);color:#fff;font-size:15px;font-weight:600;margin-top:8px}
+button:disabled{opacity:.45}
+.row{display:flex;gap:8px}
+.row>*{flex:1}
+.btn-wa{display:block;text-align:center;padding:12px;border-radius:10px;background:var(--wa);color:#fff;text-decoration:none;font-weight:600;margin-top:8px;box-sizing:border-box}
+.msg{color:var(--muted);font-size:13px;line-height:1.5}
+.hidden{display:none}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div id="gate" class="card">
+    <h3>Admin Login</h3>
+    <input id="pin" type="password" inputmode="numeric" placeholder="PIN">
+    <button id="pinBtn">Open</button>
+  </div>
+
+  <div id="app" class="hidden">
+    <h1>Spicey Corner – Admin</h1>
+
+    <div class="card">
+      <h3>Reminder queue (2+ naal varaathavanga)</h3>
+      <p class="msg" id="queueInfo"></p>
+      <button id="nextBtn">Next WhatsApp →</button>
+      <p class="msg">Each click-ku WhatsApp open aagum. Adhula Send press pannunga.</p>
+    </div>
+
+    <input id="search" placeholder="Peru illa phone number thedunga">
+    <div id="list"></div>
+  </div>
+
+</div>
+
+<script>
+firebase.initializeApp({
+  apiKey: "AIzaSyDY0jtEf8YFc9dZVA6JOD6i-SoQ4gxDDtE",
+  authDomain: "spicey-corner.firebaseapp.com",
+  projectId: "spicey-corner",
+  storageBucket: "spicey-corner.firebasestorage.app",
+  messagingSenderId: "195020607057",
+  appId: "1:195020607057:web:e62be134ff50959b747270"
+});
+const db = firebase.firestore();
+const ADMIN_PIN = '1234';            // <-- idha maathunga, strong PIN vaanga
+const SHOP_ID = 'spicey-corner';
+const $ = id => document.getElementById(id);
+const todayIST = () => new Date(Date.now() + 5.5 * 3600 * 1000).toISOString().slice(0, 10);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+let TARGET = 10, CUSTOMERS = [], queue = [], qIndex = 0;
+
+function daysSince(d) {
+  if (!d) return 999;
+  const a = Date.parse(d + 'T00:00:00Z'), b = Date.parse(todayIST() + 'T00:00:00Z');
+  return Math.round((b - a) / 86400000);
+}
+
+function customerPageUrl() {
+  return new URL('index.html?shop=' + SHOP_ID, location.href).href;
+}
+
+// Tone naal-ku thakkapadi maarum
+function makeMsg(c) {
+  const d = daysSince(c.lastStampDate);
+  const left = Math.max(TARGET - (c.stamps || 0), 0);
+  const name = c.name || 'Friend';
+  let body;
+  if (d <= 3) {
+    body = `Vanakkam ${name}! 😊 Spicey Corner-la unga stamp card-la innum ${left} stamp thaan baakki. Innaiku oru visit pannunga, free offer kaathirukku! 🍟`;
+  } else if (d <= 7) {
+    body = `Hi ${name}! Romba naal aachu unga mugaththai paathu 😄 Kadai-la unga stamp kaathirukku, innum ${left} stamp-la free offer. Vaanga, oru snack saapiduvom! 🌶️`;
+  } else {
+    body = `Vanakkam ${name} 🙏 Romba naal aachu. Unga stamp card-la innum ${left} stamp thaan! Ungalukku pudicha item saapida naanga kaathirukkom. 💛`;
+  }
+  return `${body}\n\nMenu: ${customerPageUrl()}\n— Spicey Corner`;
+}
+
+function waLink(c) {
+  return `https://wa.me/91${c.phone}?text=${encodeURIComponent(makeMsg(c))}`;
+}
+
+async function stamp(id) {
+  const t = todayIST();
+  const ref = db.collection('customers').doc(id);
+  try {
+    await db.runTransaction(async tx => {
+      const s = await tx.get(ref);
+      if (s.data().lastStampDate === t) throw new Error('already');
+      tx.update(ref, {
+        stamps: firebase.firestore.FieldValue.increment(1),
+        lastStampDate: t
+      });
+    });
+    await db.collection('stampLog').add({
+      customerId: id, date: t,
+      createdAt: firebase.firestore.FieldValue.serverTimestamp()
+    });
+  } catch (e) {
+    alert(e.message === 'already' ? 'Innaiku already stamp aachu' : 'Error: ' + e.message);
+  }
+}
+window.stamp = stamp;
+
+function render() {
+  const q = $('search').value.trim().toLowerCase();
+  const list = CUSTOMERS
+    .filter(c => (c.name || '').toLowerCase().includes(q) || (c.phone || '').includes(q))
+    .sort((a, b) => daysSince(b.lastStampDate) - daysSince(a.lastStampDate));
+
+  $('list').innerHTML = list.map(c => {
+    const d = daysSince(c.lastStampDate);
+    const done = c.lastStampDate === todayIST();
+    return `
+      <div class="card">
+        <b>${esc(c.name)}</b> · ${esc(c.phone)}<br>
+        <span class="msg">Stamps: ${c.stamps || 0}/${TARGET} · Last visit: ${c.lastStampDate ? d + ' naal munnaadi' : 'illa'}</span>
+        <div class="row">
+          <button ${done ? 'disabled' : ''} onclick="stamp('${c.id}')">${done ? 'Innaiku stamp aachu ✅' : '+1 Stamp'}</button>
+          <a class="btn-wa" target="_blank" rel="noopener" href="${waLink(c)}">WhatsApp</a>
+        </div>
+      </div>`;
+  }).join('') || '<p class="msg">Customer illa.</p>';
+
+  queue = CUSTOMERS.filter(c => c.phone && daysSince(c.lastStampDate) >= 2);
+  if (qIndex > queue.length) qIndex = 0;
+  $('queueInfo').textContent = `${queue.length} customers-ku remind pannanum`;
+}
+
+async function open() {
+  $('gate').classList.add('hidden');
+  $('app').classList.remove('hidden');
+  const s = await db.collection('shops').doc(SHOP_ID).get();
+  TARGET = (s.data() || {}).stampTarget || 10;
+  db.collection('customers').onSnapshot(snap => {
+    CUSTOMERS = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    render();
+  }, err => alert(err.message));
+}
+
+$('pinBtn').addEventListener('click', () => {
+  if ($('pin').value === ADMIN_PIN) {
+    localStorage.setItem('sc_admin', 'ok');
+    open();
+  } else {
+    alert('PIN thappu');
+  }
+});
+
+$('search').addEventListener('input', render);
+
+$('nextBtn').addEventListener('click', () => {
+  if (!queue.length) return alert('Reminder ku customers illa');
+  if (qIndex >= queue.length) qIndex = 0;
+  const c = queue[qIndex++];
+  window.open(waLink(c), '_blank');
+  $('queueInfo').textContent = `${qIndex}/${queue.length} – ${c.name} message open aachu. WhatsApp-la Send pannunga.`;
+});
+
+if (localStorage.getItem('sc_admin') === 'ok') open();
+</script>
+</body>
+</html>
